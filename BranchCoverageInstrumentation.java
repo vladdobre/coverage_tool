@@ -14,6 +14,12 @@ public class BranchCoverageInstrumentation {
     public static Map<Integer, Boolean> coverageFunction4 = new HashMap<>();
     public static Map<Integer, Boolean> coverageFunction5 = new HashMap<>();
 
+    /**
+     * This method is used to print the coverage data to a file.
+     * @param coverageFunction The coverage data for a function
+     * @param functionNumber The number of the function
+     * @param numberOfBranches The number of branches in the function
+     */
     public static void printCoverageDataToFile(Map<Integer, Boolean> coverageFunction, int functionNumber, int numberOfBranches) {
         try {
             FileWriter writer = null;
