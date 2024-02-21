@@ -1,0 +1,294 @@
+
+    class GiverDetails {
+        String email;
+        String team;
+        String section;
+
+        GiverDetails(String email, String team, String section) {
+            this.email = email;
+            this.team = team;
+            this.section = section;
+        }
+    }
+
+    /**
+     * Gets the recipients of a feedback question including recipient section and team.
+     *
+     * @param question the feedback question
+     * @param instructorGiver can be null for student giver
+     * @param studentGiver can be null for instructor giver
+     * @param courseRoster if provided, the function can be completed without touching database
+     * @return a Map of {@code FeedbackQuestionRecipient} as the value and identifier as the key.
+     */
+    public Map<String, FeedbackQuestionRecipient> getRecipientsOfQuestion(
+            FeedbackQuestionAttributes question,
+            @Nullable InstructorAttributes instructorGiver, @Nullable StudentAttributes studentGiver,
+            @Nullable CourseRoster courseRoster) {
+        assert instructorGiver != null || studentGiver != null;
+
+        Map<String, FeedbackQuestionRecipient> recipients = new HashMap<>();
+
+        boolean isInstructorGiver = instructorGiver != null;
+
+        GiverDetails giverDetails = extractGiverDetails(instructorGiver, studentGiver);
+
+        FeedbackParticipantType recipientType = question.getRecipientType();
+        FeedbackParticipantType generateOptionsFor = recipientType;
+
+        switch (recipientType) {
+        case SELF:
+            handleSelf(question, giverDetails.email, giverDetails.team, recipients);
+            break;
+        case STUDENTS:
+        case STUDENTS_EXCLUDING_SELF:
+        case STUDENTS_IN_SAME_SECTION:
+            handleStudents(question, giverDetails.email, giverDetails.team, giverDetails.section, recipients, courseRoster, isInstructorGiver, instructorGiver, generateOptionsFor);
+            break;
+        case INSTRUCTORS:
+            handleINSTRUCTORS(question, giverDetails.email, recipients, courseRoster, isInstructorGiver, instructorGiver);
+            break;
+        case TEAMS:
+        case TEAMS_EXCLUDING_SELF:
+        case TEAMS_IN_SAME_SECTION:
+            handTeams(question, giverDetails.team, giverDetails.section, recipients, courseRoster, isInstructorGiver, instructorGiver, generateOptionsFor);
+            break;
+        case OWN_TEAM:
+            recipients.put(giverDetails.team, new FeedbackQuestionRecipient(giverDetails.team, giverDetails.team));
+            break;
+        case OWN_TEAM_MEMBERS:
+            handleOwnTeam(question, giverDetails.team, recipients, courseRoster, giverDetails.email);
+            break;
+        case OWN_TEAM_MEMBERS_INCLUDING_SELF:
+            handleOwnTeams(question, giverDetails.team, recipients, courseRoster);
+            break;
+        case NONE:
+            recipients.put(Const.GENERAL_QUESTION,
+                    new FeedbackQuestionRecipient(Const.GENERAL_QUESTION, Const.GENERAL_QUESTION));
+            break;
+        default:
+            break;
+        }
+        return recipients;
+    }
+
+
+
+    /**
+    * Handles SELF type of giver.
+    *
+    * @param question the feedback question
+    * @param giverEmail the email of the giver
+    * @param giverTeam the team of the giver
+    * @param recipients the map of recipients
+    *
+    */
+    private void handleSelf( FeedbackQuestionAttributes question, String giverEmail, String giverTeam, Map<String, FeedbackQuestionRecipient> recipients){
+        if (question.getGiverType() == FeedbackParticipantType.TEAMS) {
+            recipients.put(giverTeam, new FeedbackQuestionRecipient(giverTeam, giverTeam));
+        } else {
+            recipients.put(giverEmail, new FeedbackQuestionRecipient(USER_NAME_FOR_SELF, giverEmail));
+        }
+    }
+
+    /**
+     * Handles STUDENTS type of giver.
+     * 
+     * @param question the feedback question
+     * @param giverEmail the email of the giver
+     * @param giverTeam the team of the giver
+     * @param giverSection the section of the giver
+     * @param recipients the map of recipients
+     * @param courseRoster the course roster
+     * @param isInstructorGiver whether the giver is an instructor
+     * @param instructorGiver the instructor giver
+     * @param generateOptionsFor the type of recipient
+     * 
+     */
+    private void handleStudents(FeedbackQuestionAttributes question, String giverEmail, String giverTeam, String giverSection, Map<String, FeedbackQuestionRecipient> recipients, CourseRoster courseRoster, boolean isInstructorGiver, InstructorAttributes instructorGiver, FeedbackParticipantType generateOptionsFor){
+        List<StudentAttributes> studentList;
+        if (courseRoster == null) {
+            if (generateOptionsFor == FeedbackParticipantType.STUDENTS_IN_SAME_SECTION) {
+                studentList = studentsLogic.getStudentsForSection(giverSection, question.getCourseId());
+            } else {
+                studentList = studentsLogic.getStudentsForCourse(question.getCourseId());
+            }
+        } else {
+            if (generateOptionsFor == FeedbackParticipantType.STUDENTS_IN_SAME_SECTION) {
+                final String finalGiverSection = giverSection;
+                studentList = courseRoster.getStudents().stream()
+                        .filter(studentAttributes -> studentAttributes.getSection()
+                                .equals(finalGiverSection)).collect(Collectors.toList());
+            } else {
+                studentList = courseRoster.getStudents();
+            }
+        }
+        for (StudentAttributes student : studentList) {
+            if (isInstructorGiver && !instructorGiver.isAllowedForPrivilege(
+                    student.getSection(), question.getFeedbackSessionName(),
+                    Const.InstructorPermissions.CAN_SUBMIT_SESSION_IN_SECTIONS)) {
+                // instructor can only see students in allowed sections for him/her
+                continue;
+            }
+            // Ensure student does not evaluate him/herself if it's STUDENTS_EXCLUDING_SELF or
+            // STUDENTS_IN_SAME_SECTION
+            if (giverEmail.equals(student.getEmail()) && generateOptionsFor != FeedbackParticipantType.STUDENTS) {
+                continue;
+            }
+            recipients.put(student.getEmail(), new FeedbackQuestionRecipient(student.getName(), student.getEmail(),
+                    student.getSection(), student.getTeam()));
+        }
+    }
+
+    /**
+     * Handles INSTRUCTORS type of giver.
+     * 
+     * @param question the feedback question
+     * @param giverEmail the email of the giver
+     * @param recipients the map of recipients
+     * @param courseRoster the course roster
+     * @param isStudentGiver whether the giver is a student
+     * @param instructorGiver the instructor giver
+     * 
+     */
+    private void handleINSTRUCTORS(FeedbackQuestionAttributes question, String giverEmail, Map<String, FeedbackQuestionRecipient> recipients, CourseRoster courseRoster, boolean isStudentGiver, InstructorAttributes instructorGiver){
+        List<InstructorAttributes> instructorsInCourse;
+        if (courseRoster == null) {
+            instructorsInCourse = instructorsLogic.getInstructorsForCourse(question.getCourseId());
+        } else {
+            instructorsInCourse = courseRoster.getInstructors();
+        }
+        for (InstructorAttributes instr : instructorsInCourse) {
+            // remove hidden instructors for students
+            if (isStudentGiver && !instr.isDisplayedToStudents()) {
+                continue;
+            }
+            // Ensure instructor does not evaluate himself
+            if (!giverEmail.equals(instr.getEmail())) {
+                recipients.put(instr.getEmail(),
+                        new FeedbackQuestionRecipient(instr.getName(), instr.getEmail()));
+            }
+        }
+    }
+
+    /**
+     * Handle Teams type of giver.
+     * 
+     * @param question the feedback question
+     * @param giverTeam the team of the giver
+     * @param giverSection the section of the giver
+     * @param recipients the map of recipients
+     * @param courseRoster the course roster
+     * @param isInstructorGiver whether the giver is an instructor
+     * @param instructorGiver the instructor giver
+     * @param generateOptionsFor the type of recipient
+     * 
+     */
+    private void handTeams(FeedbackQuestionAttributes question, String giverTeam, String giverSection, Map<String, FeedbackQuestionRecipient> recipients, CourseRoster courseRoster, boolean isInstructorGiver, InstructorAttributes instructorGiver, FeedbackParticipantType generateOptionsFor){
+        Map<String, List<StudentAttributes>> teamToTeamMembersTable;
+        List<StudentAttributes> teamStudents;
+        if (courseRoster == null) {
+            if (generateOptionsFor == FeedbackParticipantType.TEAMS_IN_SAME_SECTION) {
+                teamStudents = studentsLogic.getStudentsForSection(giverSection, question.getCourseId());
+            } else {
+                teamStudents = studentsLogic.getStudentsForCourse(question.getCourseId());
+            }
+            teamToTeamMembersTable = CourseRoster.buildTeamToMembersTable(teamStudents);
+        } else {
+            if (generateOptionsFor == FeedbackParticipantType.TEAMS_IN_SAME_SECTION) {
+                final String finalGiverSection = giverSection;
+                teamStudents = courseRoster.getStudents().stream()
+                        .filter(student -> student.getSection().equals(finalGiverSection))
+                        .collect(Collectors.toList());
+                teamToTeamMembersTable = CourseRoster.buildTeamToMembersTable(teamStudents);
+            } else {
+                teamToTeamMembersTable = courseRoster.getTeamToMembersTable();
+            }
+        }
+        for (Map.Entry<String, List<StudentAttributes>> team : teamToTeamMembersTable.entrySet()) {
+            if (isInstructorGiver && !instructorGiver.isAllowedForPrivilege(
+                    team.getValue().iterator().next().getSection(),
+                    question.getFeedbackSessionName(),
+                    Const.InstructorPermissions.CAN_SUBMIT_SESSION_IN_SECTIONS)) {
+                // instructor can only see teams in allowed sections for him/her
+                continue;
+            }
+            // Ensure student('s team) does not evaluate own team if it's TEAMS_EXCLUDING_SELF or
+            // TEAMS_IN_SAME_SECTION
+            if (giverTeam.equals(team.getKey()) && generateOptionsFor != FeedbackParticipantType.TEAMS) {
+                continue;
+            }
+            // recipientEmail doubles as team name in this case.
+            recipients.put(team.getKey(), new FeedbackQuestionRecipient(team.getKey(), team.getKey()));
+        }
+    }
+
+    /**
+     * Handles OWN_TEAM type of giver.
+     * 
+     * @param question the feedback question
+     * @param giverTeam the team of the giver
+     * @param recipients the map of recipients
+     * @param courseRoster the course roster
+     * @param giverEmail the email of the giver
+     * 
+     */
+    private void handleOwnTeam(FeedbackQuestionAttributes question, String giverTeam, Map<String, FeedbackQuestionRecipient> recipients, CourseRoster courseRoster, String giverEmail){
+        List<StudentAttributes> students;
+        if (courseRoster == null) {
+            students = studentsLogic.getStudentsForTeam(giverTeam, question.getCourseId());
+        } else {
+            students = courseRoster.getTeamToMembersTable().getOrDefault(giverTeam, Collections.emptyList());
+        }
+        for (StudentAttributes student : students) {
+            if (!student.getEmail().equals(giverEmail)) {
+                recipients.put(student.getEmail(), new FeedbackQuestionRecipient(student.getName(), student.getEmail(),
+                        student.getSection(), student.getTeam()));
+            }
+        }
+    }
+
+    /**
+     * Handle OWN_TEAM_MEMBERS type of giver.
+     * 
+     * @param question the feedback question
+     * @param giverTeam the team of the giver
+     * @param recipients the map of recipients
+     * @param courseRoster the course roster
+     * 
+     */
+    private void handleOwnTeams( FeedbackQuestionAttributes question, String giverTeam, Map<String, FeedbackQuestionRecipient> recipients, CourseRoster courseRoster){
+        List<StudentAttributes> teamMembers;
+        if (courseRoster == null) {
+            teamMembers = studentsLogic.getStudentsForTeam(giverTeam, question.getCourseId());
+        } else {
+            teamMembers = courseRoster.getTeamToMembersTable().getOrDefault(giverTeam, Collections.emptyList());
+        }
+        for (StudentAttributes student : teamMembers) {
+            // accepts self feedback too
+            recipients.put(student.getEmail(), new FeedbackQuestionRecipient(student.getName(), student.getEmail(),
+                    student.getSection(), student.getTeam()));
+        }
+    }
+
+    /**
+     * Extracts the giver details from the instructorGiver and studentGiver.
+     * 
+     * @param instructorGiver the instructor giver
+     * @param studentGiver the student giver
+     * @return the giver details
+     * 
+     */
+    private GiverDetails extractGiverDetails(@Nullable InstructorAttributes instructorGiver, @Nullable StudentAttributes studentGiver) {
+        if (studentGiver != null) {
+            return new GiverDetails(studentGiver.getEmail(), studentGiver.getTeam(), studentGiver.getSection());
+        } else if (instructorGiver != null) {
+            return new GiverDetails(instructorGiver.getEmail(), Const.USER_TEAM_FOR_INSTRUCTOR, Const.DEFAULT_SECTION);
+        } else {
+            throw new AssertionError("Both instructorGiver and studentGiver cannot be null");
+        }
+    }
+
+
+ 
+
+ 
