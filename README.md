@@ -1,5 +1,5 @@
-#Group 29 :  DD2480#
-#Assignment 3: Code complexity, coverage#
+#Group 28:  DD2480
+Assignment 3: Code complexity, coverage#
 
 
 This repo contains the modification, we have implemented in the teammates open source project.
